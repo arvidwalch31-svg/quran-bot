@@ -1,26 +1,16 @@
 import telebot
 import requests
+import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-from flask import Flask
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
-app = Flask('')
+BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+if not BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN environment variable is not set")
 
-@app.route('/')
-def home():
-    return "Bot is alive with Pagination and Menu!"
-
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-
-BOT_TOKEN = '8956224152:AAFsKeZLQf_-48OqyyNrJjq9lHyO806mZP4'
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# لیستی تەواوی ١١٤ سورەتەکە
 ALL_SURAHS = [
     "1. الفاتحة", "2. البقرة", "3. آل عمران", "4. النساء", "5. المائدة", "6. الأنعام",
     "7. الأعراف", "8. الأنفال", "9. التوبة", "10. يونس", "11. هود", "12. يوسف",
@@ -49,7 +39,6 @@ def generate_page_text(page):
     start_idx = page * ITEMS_PER_PAGE
     end_idx = start_idx + ITEMS_PER_PAGE
     page_items = ALL_SURAHS[start_idx:end_idx]
-    
     text = f"📜 **لیستی سورەتەکانی قورئان (پەیجی {page + 1} لە ١٢):**\n\n"
     for item in page_items:
         text += f"🔹 {item}\n"
@@ -59,18 +48,28 @@ def generate_page_text(page):
 def generate_markup(page):
     markup = InlineKeyboardMarkup()
     buttons = []
-    
     if page > 0:
         buttons.append(InlineKeyboardButton("⬅️ پێشوو", callback_data=f"page_{page-1}"))
     if (page + 1) * ITEMS_PER_PAGE < len(ALL_SURAHS):
         buttons.append(InlineKeyboardButton("داهاتوو ➡️", callback_data=f"page_{page+1}"))
-        
     markup.row(*buttons)
     return markup
 
+class KeepAliveHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+    def log_message(self, format, *args):
+        pass
+
+def keep_alive():
+    port = int(os.environ.get('PORT', 8000))
+    server = HTTPServer(('0.0.0.0', port), KeepAliveHandler)
+    Thread(target=server.serve_forever, daemon=True).start()
+
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    # دروستکردنی دوگمەی فەرمی لە مێنووی خوارەوەی تیلیگرام
     try:
         bot.set_my_commands([
             BotCommand("start", "دەستپێکردنەوەی بۆت"),
@@ -78,17 +77,16 @@ def send_welcome(message):
         ])
     except Exception as e:
         print(e)
-
     welcome_text = (
         "✨ بەخێرهاتی بۆ بۆتی ڕووناکی قورئان ✨\n\n"
         "📖 بۆ خوێندنەوەی هەر ئایەتێک و وەرگێڕانی کوردی، ژمارەی سورەت و ئایەتەکە بەم شێوازە بنێرە:\n"
         "👈 `ژمارەی سورەت:ژمارەی ئایەت`\n\n"
-        "📜 بۆ بینینی لیستی سورەتەکان، کلیک لە سەر /list بکە یان لە مێنووی خوارەوە دیاری بکە.\n\n"
+        "📜 بۆ بینینی لیستی سورەتەکان، کلیک لە سەر /list بکە.\n\n"
         "📝 نموونە:\n"
         "`2:255` (بۆ خوێندنەوەی ئایەتەلوکورسی)\n"
         "┄─»🔹«─┄\n"
         "🛠️ گەشەپێدەر:\n"
-        "👤 @Ahma_dd0"
+        "👤 @Ahma\_dd0"
     )
     bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
@@ -103,7 +101,6 @@ def handle_page_click(call):
     page = int(call.data.split('_')[1])
     text = generate_page_text(page)
     markup = generate_markup(page)
-    
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
     except Exception as e:
@@ -112,26 +109,20 @@ def handle_page_click(call):
 @bot.message_handler(func=lambda message: True)
 def get_quran_verse(message):
     text = message.text.strip()
-    
     if ":" not in text:
         bot.reply_to(message, "⚠️ تکایە ژمارەی سورەت و ئایەتەکە بەم شێوازە بنوسە -> `1:1`\n📜 بۆ بینینی لیستی سورەتەکان بنووسە: /list")
         return
-        
     try:
-        surah, ayah = text.split(":")
+        surah, ayah = text.split(":", 1)
         msg = bot.send_message(message.chat.id, "⏳ خەریکم ئایەتەکە دەهێنم...", reply_to_message_id=message.message_id)
-        
         arabic_url = f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}"
         kurdish_url = f"https://api.alquran.cloud/v1/ayah/{surah}:{ayah}/ku.asan"
-        
         res_ar = requests.get(arabic_url, timeout=5).json()
         res_ku = requests.get(kurdish_url, timeout=5).json()
-        
         if res_ar['code'] == 200 and res_ku['code'] == 200:
             arabic_text = res_ar['data']['text']
             kurdish_text = res_ku['data']['text']
             surah_name = res_ar['data']['surah']['name']
-            
             response = (
                 f"📖 **{surah_name}** (ئایەتی {ayah})\n"
                 f"┄─»🔹«─┄\n\n"
@@ -142,7 +133,6 @@ def get_quran_verse(message):
             bot.edit_message_text(response, message.chat.id, msg.message_id, parse_mode="Markdown")
         else:
             bot.edit_message_text("❌ ببوورە، ئەو ئایەتە یان سورەتە بوونی نییە.", message.chat.id, msg.message_id)
-            
     except requests.exceptions.Timeout:
         bot.edit_message_text("⚠️ کاتەکەی بەسەرچوو! تکایە کەمێکی تر تاقی بکەرەوە.", message.chat.id, msg.message_id)
     except Exception as e:
@@ -151,4 +141,3 @@ def get_quran_verse(message):
 
 keep_alive()
 bot.infinity_polling()
-
